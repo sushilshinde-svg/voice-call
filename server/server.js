@@ -9,8 +9,8 @@ app.use(cors());
 const server = http.createServer(app);
 const io = new Server(server, {
     cors: {
-        // SECURITY: Only allow connections from your frontend
-        origin: ["http://localhost:5173", "http://127.0.0.1:5173"],
+        // SECURITY: For production, replace "*" with your actual Vercel URL (e.g., "https://your-app.vercel.app")
+        origin: "*",
         methods: ["GET", "POST"]
     }
 });
