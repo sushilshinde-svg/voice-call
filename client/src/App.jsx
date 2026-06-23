@@ -7,6 +7,56 @@ import './index.css';
 // Use environment variable for production, fallback to localhost for dev
 const socket = io(import.meta.env.VITE_SERVER_URL || 'http://localhost:5000');
 
+// ICE servers used for the WebRTC connection.
+// STUN alone only works for ~80% of networks (same Wi-Fi / simple NAT).
+// A TURN server is REQUIRED to relay media when both peers are behind
+// firewalls / symmetric NAT / mobile data — without it the call shows
+// "Connected" but no audio flows in either direction.
+//
+// Configure your own TURN server via environment variables (see
+// client/.env.example). If none are provided, we fall back to Open Relay's
+// free public TURN servers so the app still works out of the box. Free
+// public TURN can be rate-limited, so set your own for production.
+const buildIceServers = () => {
+    const servers = [{ urls: 'stun:stun.l.google.com:19302' }];
+
+    const turnUrls = import.meta.env.VITE_TURN_URLS;
+    const turnUsername = import.meta.env.VITE_TURN_USERNAME;
+    const turnCredential = import.meta.env.VITE_TURN_CREDENTIAL;
+
+    if (turnUrls && turnUsername && turnCredential) {
+        // VITE_TURN_URLS may be a comma-separated list of TURN URLs.
+        servers.push({
+            urls: turnUrls.split(',').map((u) => u.trim()).filter(Boolean),
+            username: turnUsername,
+            credential: turnCredential,
+        });
+    } else {
+        // Fallback: Open Relay free public TURN.
+        servers.push(
+            {
+                urls: 'turn:openrelay.metered.ca:80',
+                username: 'openrelayproject',
+                credential: 'openrelayproject',
+            },
+            {
+                urls: 'turn:openrelay.metered.ca:443',
+                username: 'openrelayproject',
+                credential: 'openrelayproject',
+            },
+            {
+                urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+                username: 'openrelayproject',
+                credential: 'openrelayproject',
+            },
+        );
+    }
+
+    return servers;
+};
+
+const PEER_CONFIG = { iceServers: buildIceServers() };
+
 function App() {
     const [me, setMe] = useState('');
     const [stream, setStream] = useState(null);
@@ -50,15 +100,28 @@ function App() {
         socket.on('call-ended', () => {
             leaveCall();
         });
+
+        // Clean up listeners so they don't stack up (React StrictMode mounts
+        // the component twice in dev, which would otherwise duplicate them).
+        return () => {
+            socket.off('connect');
+            socket.off('call-made');
+            socket.off('call-ended');
+        };
     }, []);
 
     const callUser = (id) => {
         if (!id) return;
+        if (!stream) {
+            alert("Microphone is not ready yet. Please allow mic access and try again.");
+            return;
+        }
         setStatus('Calling...');
         const peer = new Peer({
             initiator: true,
             trickle: false,
             stream: stream,
+            config: PEER_CONFIG,
         });
 
         peer.on('signal', (data) => {
@@ -71,14 +134,18 @@ function App() {
         });
 
         peer.on('stream', (currentStream) => {
-            if (userVideo.current) {
-                userVideo.current.srcObject = currentStream;
-            }
+            playRemoteStream(currentStream);
+        });
+
+        // Reflect the *real* connection state rather than just signal exchange.
+        peer.on('connect', () => setStatus('Connected'));
+        peer.on('error', (err) => {
+            console.error("Peer connection error:", err);
+            setStatus('Connection failed');
         });
 
         socket.on('call-answered', (data) => {
             setCallAccepted(true);
-            setStatus('Connected');
             peer.signal(data.signal);
         });
 
@@ -90,12 +157,17 @@ function App() {
     };
 
     const answerCall = () => {
+        if (!stream) {
+            alert("Microphone is not ready yet. Please allow mic access and try again.");
+            return;
+        }
         setCallAccepted(true);
-        setStatus('Connected');
+        setStatus('Connecting...');
         const peer = new Peer({
             initiator: false,
             trickle: false,
             stream: stream,
+            config: PEER_CONFIG,
         });
 
         peer.on('signal', (data) => {
@@ -103,13 +175,30 @@ function App() {
         });
 
         peer.on('stream', (currentStream) => {
-            if (userVideo.current) {
-                userVideo.current.srcObject = currentStream;
-            }
+            playRemoteStream(currentStream);
+        });
+
+        peer.on('connect', () => setStatus('Connected'));
+        peer.on('error', (err) => {
+            console.error("Peer connection error:", err);
+            setStatus('Connection failed');
         });
 
         peer.signal(callerSignal);
         connectionRef.current = peer;
+    };
+
+    // Attach the remote audio stream and explicitly start playback.
+    // Browsers can block autoplay; calling play() inside the user-gesture
+    // chain (Call/Answer click) and catching errors surfaces the problem
+    // instead of failing silently.
+    const playRemoteStream = (currentStream) => {
+        if (!userVideo.current) return;
+        userVideo.current.srcObject = currentStream;
+        userVideo.current.play().catch((err) => {
+            console.error("Autoplay blocked / playback error:", err);
+            setStatus('Tap anywhere to enable audio');
+        });
     };
 
     const leaveCall = () => {
