@@ -13,29 +13,49 @@ const socket = io(import.meta.env.VITE_SERVER_URL || 'http://localhost:5000');
 // firewalls / symmetric NAT / mobile data — without it the call shows
 // "Connected" but no audio flows in either direction.
 //
-// The defaults below use Open Relay's free public TURN servers so the app
-// works out of the box. For production, replace these with your own
-// (e.g. Twilio Network Traversal or metered.ca) for reliability.
-const ICE_SERVERS = [
-    { urls: 'stun:stun.l.google.com:19302' },
-    {
-        urls: 'turn:openrelay.metered.ca:80',
-        username: 'openrelayproject',
-        credential: 'openrelayproject',
-    },
-    {
-        urls: 'turn:openrelay.metered.ca:443',
-        username: 'openrelayproject',
-        credential: 'openrelayproject',
-    },
-    {
-        urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-        username: 'openrelayproject',
-        credential: 'openrelayproject',
-    },
-];
+// Configure your own TURN server via environment variables (see
+// client/.env.example). If none are provided, we fall back to Open Relay's
+// free public TURN servers so the app still works out of the box. Free
+// public TURN can be rate-limited, so set your own for production.
+const buildIceServers = () => {
+    const servers = [{ urls: 'stun:stun.l.google.com:19302' }];
 
-const PEER_CONFIG = { iceServers: ICE_SERVERS };
+    const turnUrls = import.meta.env.VITE_TURN_URLS;
+    const turnUsername = import.meta.env.VITE_TURN_USERNAME;
+    const turnCredential = import.meta.env.VITE_TURN_CREDENTIAL;
+
+    if (turnUrls && turnUsername && turnCredential) {
+        // VITE_TURN_URLS may be a comma-separated list of TURN URLs.
+        servers.push({
+            urls: turnUrls.split(',').map((u) => u.trim()).filter(Boolean),
+            username: turnUsername,
+            credential: turnCredential,
+        });
+    } else {
+        // Fallback: Open Relay free public TURN.
+        servers.push(
+            {
+                urls: 'turn:openrelay.metered.ca:80',
+                username: 'openrelayproject',
+                credential: 'openrelayproject',
+            },
+            {
+                urls: 'turn:openrelay.metered.ca:443',
+                username: 'openrelayproject',
+                credential: 'openrelayproject',
+            },
+            {
+                urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+                username: 'openrelayproject',
+                credential: 'openrelayproject',
+            },
+        );
+    }
+
+    return servers;
+};
+
+const PEER_CONFIG = { iceServers: buildIceServers() };
 
 function App() {
     const [me, setMe] = useState('');
